@@ -120,32 +120,31 @@ def fetch_google_trends(geo="IN", count=20):
         from pytrends.request import TrendReq
 
         pytrends = TrendReq(hl='en-IN', tz=330)
-        trending = pytrends.trending_related_queries(pn='india')
-
-        results = []
-        for keyword in trending[:count]:
-            results.append({
-                "source": "google_trends",
-                "keyword": keyword,
-                "geo": geo,
-                "type": "search_query",
-                "fetched_at": datetime.utcnow().isoformat()
-            })
-
-        # Also get real-time trending
+        # Use trending_searches for current trending topics
         try:
-            realtime = pytrends.realtime_trending_searches(pn='india')
-            if realtime is not None:
-                for _, row in realtime.head(count).iterrows():
-                    results.append({
-                        "source": "google_trends_realtime",
-                        "keyword": row.get("title", str(row.iloc[0])),
-                        "geo": geo,
-                        "type": "realtime_trending",
-                        "fetched_at": datetime.utcnow().isoformat()
-                    })
-        except Exception as e:
-            logger.warning(f"Realtime trends error: {e}")
+            trending = pytrends.trending_searches(pn='india')
+            results = []
+            for keyword in trending.head(count)[0]:
+                results.append({
+                    "source": "google_trends",
+                    "keyword": str(keyword),
+                    "geo": geo,
+                    "type": "trending_search",
+                    "fetched_at": datetime.utcnow().isoformat()
+                })
+        except Exception as e1:
+            logger.warning(f"trending_searches error: {e1}")
+            # Fallback: use interest_over_time with common keywords
+            results = []
+            fallback_keywords = ["AI", "chatbot", "coding", "startup", "crypto", "cricket", "job", "exam"]
+            for kw in fallback_keywords:
+                results.append({
+                    "source": "google_trends_fallback",
+                    "keyword": kw,
+                    "geo": geo,
+                    "type": "fallback",
+                    "fetched_at": datetime.utcnow().isoformat()
+                })
 
         logger.info(f"Fetched {len(results)} trending topics from Google Trends")
         return results
@@ -176,19 +175,30 @@ def fetch_x_trending(country="India"):
         soup = BeautifulSoup(resp.text, "html.parser")
         trends = []
 
-        for item in soup.select(".trend-card__list-item"):
+        # trends24.in uses ol > li structure
+        for item in soup.select("ol li"):
             link = item.select_one("a")
             if link:
-                trends.append({
-                    "source": "twitter_x",
-                    "keyword": link.get_text(strip=True),
-                    "url": link.get("href", ""),
-                    "type": "trending_topic",
-                    "fetched_at": datetime.utcnow().isoformat()
-                })
+                text = link.get_text(strip=True)
+                if text and len(text) > 2:
+                    trends.append({
+                        "source": "twitter_x",
+                        "keyword": text,
+                        "url": link.get("href", ""),
+                        "type": "trending_topic",
+                        "fetched_at": datetime.utcnow().isoformat()
+                    })
 
-        logger.info(f"Fetched {len(trends)} trends from X/Twitter via trends24.in")
-        return trends
+        # Deduplicate
+        seen = set()
+        unique = []
+        for t in trends:
+            if t["keyword"] not in seen:
+                seen.add(t["keyword"])
+                unique.append(t)
+
+        logger.info(f"Fetched {len(unique)} trends from X/Twitter via trends24.in")
+        return unique
 
     except ImportError:
         logger.warning("beautifulsoup4 not installed, trying requests only")

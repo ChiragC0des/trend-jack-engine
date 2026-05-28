@@ -15,6 +15,14 @@ from pathlib import Path
 from datetime import datetime
 
 PROJECT_DIR = Path(__file__).parent.parent
+
+# Load .env file
+try:
+    from dotenv import load_dotenv
+    load_dotenv(PROJECT_DIR / ".env")
+except ImportError:
+    pass
+
 OUTPUT_DIR = PROJECT_DIR / "output"
 LOG_DIR = PROJECT_DIR / "logs"
 
@@ -105,27 +113,32 @@ def call_google_gemini(prompt_text):
     }
 
     try:
-        resp = requests.post(url, json=payload, timeout=60)
-        resp.raise_for_status()
-        result = resp.json()
+        for attempt in range(3):
+            resp = requests.post(url, json=payload, timeout=60)
+            if resp.status_code == 429:
+                wait = (attempt + 1) * 15
+                logger.warning(f"Rate limited, waiting {wait}s...")
+                time.sleep(wait)
+                continue
+            resp.raise_for_status()
+            result = resp.json()
 
-        # Extract text from Gemini response
-        candidates = result.get("candidates", [])
-        if not candidates:
-            logger.error("No candidates in Gemini response")
-            return None
+            candidates = result.get("candidates", [])
+            if not candidates:
+                logger.error("No candidates in Gemini response")
+                return None
 
-        content = candidates[0].get("content", {})
-        parts = content.get("parts", [])
-        if not parts:
-            logger.error("No parts in Gemini response")
-            return None
+            content = candidates[0].get("content", {})
+            parts = content.get("parts", [])
+            if not parts:
+                logger.error("No parts in Gemini response")
+                return None
 
-        text = parts[0].get("text", "")
-        return json.loads(text) if text else None
+            text = parts[0].get("text", "")
+            return json.loads(text) if text else None
 
     except requests.exceptions.HTTPError as e:
-        logger.error(f"Gemini API error: {e} - {e.response.text if e.response else ''}")
+        logger.error(f"Gemini API error: {e} - {e.response.text[:300] if e.response else ''}")
         return None
     except Exception as e:
         logger.error(f"Gemini call error: {e}")
