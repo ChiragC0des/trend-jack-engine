@@ -24,6 +24,7 @@
  */
 
 import { applySlippage, feeFor } from "../execution/fillMath.js";
+import { isKillSwitchEngaged } from "../confidence/killSwitch.js";
 
 const EPS = 1e-9;
 
@@ -92,6 +93,12 @@ export class PaperBroker {
     if (!["BUY", "SELL"].includes(side)) return persist("REJECTED", `invalid side: ${side}`);
     if (!Number.isFinite(qty) || qty <= 0) return persist("REJECTED", `invalid qty: ${qty}`);
     if (side === "BUY") {
+      // Phase 3 global kill switch: no NEW entries while engaged. SELLs are
+      // deliberately still accepted — exits reduce risk; the worker's sweep
+      // handles force-flattening open positions.
+      if (isKillSwitchEngaged(this.db)) {
+        return persist("REJECTED", "kill switch engaged: new BUY orders are not accepted");
+      }
       const portfolio = this.getPortfolio(portfolioId);
       const estPrice = applySlippage(refPrice, "BUY", this.slippageBps);
       const estCost = qty * estPrice + feeFor(qty, estPrice, this.feeBps);

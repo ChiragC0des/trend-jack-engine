@@ -1,5 +1,5 @@
 /**
- * QUANTFORGE worker (Phase 2): scheduled background jobs.
+ * QUANTFORGE worker (Phases 2-3): scheduled background jobs.
  *
  * Runs as its OWN OS process (see ./index.js), sharing the SQLite database
  * (WAL mode) with the engine. Heavy/periodic work never runs inside the
@@ -10,14 +10,24 @@
  *     take-profit hits (intrabar via low/high, stop first — conservative,
  *     same as the Phase 1 backtester) and for staleness (open longer than
  *     stalePositionMs of MARKET time), and actually closes them: order +
- *     fill + trade rows, cash update, position delete, atomically.
+ *     fill + trade rows, cash update, position delete, atomically. When the
+ *     GLOBAL KILL SWITCH is engaged the sweep instead force-flattens every
+ *     open position across all portfolios (reason 'kill_switch') — folded
+ *     into this job rather than a fourth timer because it is the same
+ *     close-position mechanics on the same cadence.
  *   - equity snapshots (every snapshotIntervalMs): equity = cash + sum of
  *     open position qty * latest close, written to `snapshots`. Snapshots
  *     are the ONLY read model for equity curves — nothing recomputes equity
  *     from raw trades at read time.
+ *   - confidence recalculation (Phase 3, every confidenceIntervalMs):
+ *     recomputes each portfolio's confidence score (src/confidence/score.js)
+ *     and persists the full breakdown to `confidence_scores`, then runs the
+ *     auto-demotion check for live portfolios (src/confidence/promotion.js)
+ *     — folded together because demotion reads the same trades/snapshots
+ *     the scorer just read.
  *
- * Phase 3 (confidence recalculation) and Phase 4 (AI daily brief) jobs are
- * intentionally absent — the job list is exactly the two above.
+ * The Phase 4 (AI daily brief) job is intentionally absent — the job list
+ * is exactly the three above.
  *
  * Stop/target closes fill fully at the trigger price (plus slippage): unlike
  * the engine's resting market orders, a triggered stop is priced by its level
@@ -26,6 +36,9 @@
  */
 
 import { applySlippage, feeFor } from "../execution/fillMath.js";
+import { recordConfidence } from "../confidence/score.js";
+import { checkAutoDemotions } from "../confidence/promotion.js";
+import { isKillSwitchEngaged } from "../confidence/killSwitch.js";
 
 const EPS = 1e-9;
 
@@ -41,6 +54,7 @@ export class Worker {
     this.slippageBps = config.slippageBps ?? 5;
     this.settlementIntervalMs = config.settlementIntervalMs ?? 2_000;
     this.snapshotIntervalMs = config.snapshotIntervalMs ?? 300_000;
+    this.confidenceIntervalMs = config.confidenceIntervalMs ?? 30_000;
     this.stalePositionMs = config.stalePositionMs ?? 7 * 24 * 3_600_000;
     this.log = config.log ?? console;
     this.timers = [];
@@ -49,8 +63,9 @@ export class Worker {
   start() {
     this.timers.push(setInterval(() => this.safely("settlement", () => this.settlementSweep()), this.settlementIntervalMs));
     this.timers.push(setInterval(() => this.safely("snapshot", () => this.snapshotEquity()), this.snapshotIntervalMs));
+    this.timers.push(setInterval(() => this.safely("confidence", () => this.recalculateConfidence()), this.confidenceIntervalMs));
     this.log.info?.(
-      `[worker] started: settlement every ${this.settlementIntervalMs}ms, snapshots every ${this.snapshotIntervalMs}ms`
+      `[worker] started: settlement every ${this.settlementIntervalMs}ms, snapshots every ${this.snapshotIntervalMs}ms, confidence every ${this.confidenceIntervalMs}ms`
     );
   }
 
@@ -75,6 +90,10 @@ export class Worker {
   }
 
   settlementSweep() {
+    if (isKillSwitchEngaged(this.db)) {
+      this.killSwitchFlatten();
+      return;
+    }
     const positions = this.db.prepare("SELECT * FROM positions").all();
     let closed = 0;
     for (const position of positions) {
@@ -103,6 +122,54 @@ export class Worker {
       closed++;
     }
     if (closed > 0) this.log.info?.(`[worker] settlement sweep: closed ${closed} position(s)`);
+  }
+
+  /**
+   * Kill switch engaged: market-close EVERY open position across ALL
+   * portfolios, ignoring stop/target levels and any resting SELL orders
+   * (closePosition re-reads inside its transaction, and the broker cancels
+   * a SELL whose position vanished, so racing an in-flight exit is safe).
+   * Positions are priced at the latest candle close (entry price as a last
+   * resort); ts is wall-clock — this is an operator action, not market time.
+   */
+  killSwitchFlatten() {
+    const positions = this.db.prepare("SELECT * FROM positions").all();
+    if (positions.length === 0) return;
+    const now = Date.now();
+    let flattened = 0;
+    for (const position of positions) {
+      const candle = this.latestCandle(position.symbol);
+      const closed = this.closePosition(position, candle?.close ?? position.avg_entry_price, "kill_switch", now);
+      if (closed === false) continue;
+      flattened++;
+      this.db
+        .prepare("INSERT INTO notifications (portfolio_id, ts, type, message) VALUES (?, ?, 'kill_switch', ?)")
+        .run(
+          position.portfolio_id,
+          now,
+          `kill switch force-flattened ${position.symbol} qty ${position.qty.toFixed(6)} in portfolio #${position.portfolio_id}`
+        );
+    }
+    if (flattened > 0) {
+      this.log.warn?.(`[worker] KILL SWITCH: force-flattened ${flattened} open position(s) across all portfolios`);
+    }
+  }
+
+  /**
+   * Phase 3 job: recompute + persist every portfolio's confidence score,
+   * then run the auto-demotion check for live portfolios (same data reads,
+   * one timer — see the module header).
+   */
+  recalculateConfidence() {
+    const portfolios = this.db.prepare("SELECT * FROM portfolios ORDER BY id").all();
+    for (const portfolio of portfolios) {
+      const b = recordConfidence(this.db, portfolio, { log: this.log });
+      this.log.info?.(
+        `[worker] confidence: portfolio #${portfolio.id} (${portfolio.strategy_name}) score ${b.score}` +
+          `${b.capped ? " [CAPPED at 60: sample floor not met]" : ""} — trades ${b.tradesCount}, days ${b.daysElapsed.toFixed(1)}`
+      );
+    }
+    checkAutoDemotions(this.db, { log: this.log });
   }
 
   closePosition(position, rawPrice, reason, ts) {
@@ -138,6 +205,7 @@ export class Worker {
         `[worker] settlement: closed portfolio #${position.portfolio_id} ${position.symbol} qty ${position.qty.toFixed(6)} (${reason}, pnl ${Number(pnl).toFixed(2)})`
       );
     }
+    return pnl;
   }
 
   snapshotEquity() {

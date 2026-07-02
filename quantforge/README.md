@@ -1,6 +1,6 @@
-# QUANTFORGE — Phases 1 & 2
+# QUANTFORGE — Phases 1–3
 
-QUANTFORGE is an AI strategy-trading lab: **load strategy → backtest → paper trade → confidence gate → live**. This folder contains **Phase 1** (file-based strategy definitions plus an event-driven backtester) and **Phase 2** (the paper trading engine: live price feeds, realistic order lifecycle simulation, isolated virtual portfolios in SQLite, and a separate worker process — see the Phase 2 section below). There is no confidence gate, AI layer, dashboard, or live execution yet — those are later phases.
+QUANTFORGE is an AI strategy-trading lab: **load strategy → backtest → paper trade → confidence gate → live**. This folder contains **Phase 1** (file-based strategy definitions plus an event-driven backtester), **Phase 2** (the paper trading engine: live price feeds, realistic order lifecycle simulation, isolated virtual portfolios in SQLite, and a separate worker process), and **Phase 3** (the confidence score, promotion gate with auto-demotion, and global kill switch — see the Phase 3 section below). There is no AI layer (Phase 4), dashboard (Phase 5), or real live-broker execution (Phase 6) yet — those are later phases.
 
 It lives inside the same repository as the (unrelated at runtime) Trend-Jack Engine at the repo root; QUANTFORGE Phase 1 is fully self-contained under `/quantforge` and touches nothing outside it.
 
@@ -70,7 +70,7 @@ The Trend-Jack pipeline at the repo root scrapes trending topics/memes and write
 
 ## Phase 1 boundaries
 
-Phase 1 itself contains only the layers above — its execution layer is the backtester. Order-fill simulation for paper trading, worker processes, and the database **now exist as Phase 2** (below), built alongside the Phase 1 modules without changing them. Still deliberately **not** built: the confidence score / promotion gate (Phase 3), AI providers including the Pine Script translator and daily brief (Phase 4), dashboards (Phase 5), live-money execution, and the trend-jack signal bridge.
+Phase 1 itself contains only the layers above — its execution layer is the backtester. Order-fill simulation for paper trading, worker processes, and the database **now exist as Phase 2**, and the confidence score / promotion gate / kill switch **now exist as Phase 3** (both below), built alongside the Phase 1 modules without changing them. Still deliberately **not** built: AI providers including the Pine Script translator and daily brief (Phase 4), dashboards (Phase 5), real live-broker execution (Phase 6), and the trend-jack signal bridge.
 
 ## Phase 2 — paper trading engine
 
@@ -100,6 +100,7 @@ quantforge/
 │   └── worker/                   # WORKER PROCESS: scheduled jobs, never inside the engine
 │       ├── index.js              #   entry point: npm run worker
 │       └── worker.js             #   settlement sweeps (stop/target/stale closes) + equity snapshots
+│                                 #   (+ Phase 3: confidence recalculation job)
 └── var/                          # runtime SQLite files (gitignored)
 ```
 
@@ -107,7 +108,7 @@ quantforge/
 
 **Order lifecycle.** No instant fills: an order placed on the close of candle *i* rests until candle *i+1* and fills at that open with slippage (buys worse/higher, sells worse/lower — Phase 1 conventions via `fillMath.js`). Each tick fills at most a configurable fraction of the remaining qty and a configurable notional cap, one `fills` row per increment, so large orders pass through `PARTIALLY_FILLED` across several ticks before `FILLED`. Orders failing sanity checks (non-positive qty, insufficient cash for a buy) are `REJECTED`; unfilled remainders are `CANCELLED` on engine shutdown or when an exit signal supersedes a still-filling entry.
 
-**Engine vs worker.** The engine (`npm run engine`) runs both example strategies concurrently — each against its own portfolio, isolated by `portfolio_id`; one strategy never touches another's cash, positions, or orders. It evaluates rules per closed candle by re-running the Phase 1 evaluator over a growing candle buffer (all indicators are causal, so this is signal-identical to streaming). The worker (`npm run worker`) is a **separate OS process** running exactly two scheduled jobs: settlement sweeps (default every 2 s: stop-loss / take-profit hits checked intrabar against the latest candle, stop first; positions older than a configurable market-time age force-closed as stale) and equity snapshots (default every 5 min). Confidence recalculation (Phase 3) and the AI daily brief (Phase 4) are intentionally absent from the job list. Both processes are configured by env vars (`QF_DB_PATH`, `QF_FEED`, `QF_SETTLE_MS`, `QF_SNAPSHOT_MS`, `QF_STALE_MS`, fee/slippage/fill caps — see the entry-point headers).
+**Engine vs worker.** The engine (`npm run engine`) runs both example strategies concurrently — each against its own portfolio, isolated by `portfolio_id`; one strategy never touches another's cash, positions, or orders. It evaluates rules per closed candle by re-running the Phase 1 evaluator over a growing candle buffer (all indicators are causal, so this is signal-identical to streaming). The worker (`npm run worker`) is a **separate OS process** running exactly three scheduled jobs: settlement sweeps (default every 2 s: stop-loss / take-profit hits checked intrabar against the latest candle, stop first; positions older than a configurable market-time age force-closed as stale), equity snapshots (default every 5 min), and — since Phase 3 — confidence recalculation (default every 30 s, see below). The AI daily brief (Phase 4) is intentionally absent from the job list. Both processes are configured by env vars (`QF_DB_PATH`, `QF_FEED`, `QF_SETTLE_MS`, `QF_SNAPSHOT_MS`, `QF_CONFIDENCE_MS`, `QF_STALE_MS`, fee/slippage/fill caps — see the entry-point headers).
 
 **Run it:**
 
@@ -120,3 +121,34 @@ npm run worker        # real worker process (start alongside the engine)
 ```
 
 The demo spawns `src/worker/index.js` via `node:child_process` — the same two-process, WAL-concurrency path as real deployment, just with a throwaway DB in `var/`, accelerated replay, and short worker intervals. There is no separate `worker-demo` script: a worker with no engine writing market data has nothing observable to do, so the demo exercises both together.
+
+## Phase 3 — confidence score, promotion gate, kill switch
+
+Phase 3 decides **which paper strategies deserve live status** and enforces the safety rails around that status. Promotion here flips `portfolios.status` to `'live'` and applies rules (capital cap, auto-demotion, kill switch) — it does **not** route orders to a real exchange; real live-broker execution is Phase 6.
+
+```
+quantforge/
+├── src/confidence/               # CONFIDENCE LAYER (orchestration, no UI)
+│   ├── score.js                  #   the weighted composite score + persistence
+│   ├── promotion.js              #   promote() gate + auto-demotion checks
+│   ├── killSwitch.js             #   setKillSwitch()/isKillSwitchEngaged()
+│   └── demo.js                   #   npm run confidence-demo (offline)
+└── scripts/kill-switch.js        #   npm run kill-switch -- on|off|status
+```
+
+**Confidence score.** A weighted composite in 0–100, recomputed by the worker's third scheduled job (`QF_CONFIDENCE_MS`, default 30 s — never by the engine, never at read time) and persisted with its **full per-component breakdown** to the `confidence_scores` table (latest row per portfolio is current; older rows are history for the Phase 5 dashboard). Components (full rationale in `src/confidence/score.js`): paper win rate vs the breakeven win rate implied by the strategy's own avg win/avg loss (**20%**), profit factor scaled 1→3 (**20%**), annualized Sharpe over the `snapshots` equity curve using the Phase 1 annualization convention (**20%**), max-drawdown penalty 5%→25% (**15%**), a sample-size factor scaling with progress toward 50 trades / 14 calendar days (**15%**), and backtest↔paper consistency vs the strategy's own Phase 1 backtest metrics, cached in `backtest_metrics` (**10%**). Separately from the sample-size sub-score, the composite is **hard-capped at 60** (stored as an explicit `capped` flag) until the portfolio has ≥ 50 closed trades **and** ≥ 14 calendar days of history — an immature portfolio can never clear the promotion bar on a lucky streak.
+
+**Promotion gate.** `promote(db, strategyName, typedConfirmation, { liveCapitalCap })` in `src/confidence/promotion.js` requires the latest confidence score ≥ 75 **and** the caller to type the strategy name back exactly (case-sensitive, untrimmed) — Invariant #1: no strategy reaches live without explicit confirmation. Every attempt, success or rejection, is logged with the failed gate. **Auto-demotion** runs from the worker (folded into the confidence job): a live portfolio is knocked back to `paper` when its `risk.max_daily_loss_pct` is breached in realized pnl over the current UTC day, or on a 3-day losing streak (the last 3 UTC calendar days that had ≥ 1 closed trade were each net-negative). Demotion is an event, not a resting status — the portfolio keeps paper trading and can re-earn promotion; the record lives in `demoted_at` / `demotion_reason` and a `notifications` row.
+
+**Global kill switch.** A single-row `system_state` table. While engaged, the paper broker **rejects every new BUY order** and the worker's settlement sweep **force-flattens every open position across all portfolios** (reason `kill_switch`, with a `notifications` row per close). Operate it with `node scripts/kill-switch.js on ["reason"] | off | status` — there is no dashboard until Phase 5; the future dashboard button will call the same `setKillSwitch()` function.
+
+**Run it:**
+
+```bash
+npm run confidence-demo   # offline end-to-end Phase 3 demo: real paper run (capped
+                          # scores), a clearly-labelled synthetic matured portfolio
+                          # scored through the real function, promotion rejection +
+                          # success, auto-demotion, and the kill switch
+```
+
+Pre-Phase-3 database files are migrated in place: `openDb()` adds the new `portfolios` columns via `ALTER TABLE` when missing.

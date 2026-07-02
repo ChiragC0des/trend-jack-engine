@@ -1,7 +1,7 @@
 {
   "name": "quantforge",
   "version": "0.1.0",
-  "description": "QUANTFORGE Phases 1-2: file-based strategy definitions + event-driven backtester, plus a paper trading engine (live feed, order lifecycle simulation, SQLite/WAL, separate worker process). Later phases add confidence gating, the AI layer, dashboards, and live execution.",
+  "description": "QUANTFORGE Phases 1-3: file-based strategy definitions + event-driven backtester, a paper trading engine (live feed, order lifecycle simulation, SQLite/WAL, separate worker process), and the confidence score / promotion gate / kill switch. Later phases add the AI layer, dashboards, and live execution.",
   "type": "module",
   "private": true,
   "engines": {
@@ -13,6 +13,8 @@
     "engine": "node src/engine/index.js",
     "worker": "node src/worker/index.js",
     "engine-demo": "node src/engine/demo.js",
+    "confidence-demo": "node src/confidence/demo.js",
+    "kill-switch": "node scripts/kill-switch.js",
     "generate-fixture": "node scripts/generate-fixture.js"
   },
   "dependencies": {
