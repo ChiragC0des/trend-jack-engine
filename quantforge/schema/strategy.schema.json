@@ -1,0 +1,220 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://quantforge.local/schema/strategy.schema.json",
+  "title": "QUANTFORGE Strategy",
+  "description": "Declarative trading strategy definition for the QUANTFORGE engine. A strategy names the symbols and timeframe it trades, a set of entry/exit condition objects (all conditions in a rule array are ANDed together), and a risk block. Strategies are stored as JSON (or YAML) files under /strategies and validated against this schema before loading.",
+  "type": "object",
+  "required": ["name", "symbols", "timeframe", "entry_rules", "exit_rules", "risk"],
+  "additionalProperties": false,
+  "properties": {
+    "name": {
+      "type": "string",
+      "minLength": 1,
+      "description": "Human-readable unique strategy name."
+    },
+    "description": {
+      "type": "string",
+      "description": "Optional free-text description of the strategy's intent."
+    },
+    "symbols": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "type": "string", "minLength": 1 },
+      "description": "Market symbols this strategy trades, in exchange notation (e.g. \"BTC/USDT\")."
+    },
+    "timeframe": {
+      "type": "string",
+      "pattern": "^[0-9]+(m|h|d|w)$",
+      "description": "Candle timeframe in ccxt notation, e.g. \"1m\", \"15m\", \"1h\", \"4h\", \"1d\"."
+    },
+    "entry_rules": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/condition" },
+      "description": "Conditions that must ALL be true on a candle to open a position (AND semantics)."
+    },
+    "exit_rules": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/condition" },
+      "description": "Conditions that must ALL be true on a candle to close an open position (AND semantics). Stop-loss / take-profit from the risk block always apply in addition to these rules."
+    },
+    "risk": {
+      "type": "object",
+      "required": ["stop_loss_pct", "take_profit_pct", "max_position_pct", "max_daily_loss_pct"],
+      "additionalProperties": false,
+      "description": "Risk management parameters. Percentages are plain numbers, e.g. 2 means 2%.",
+      "properties": {
+        "stop_loss_pct": { "type": "number", "exclusiveMinimum": 0, "description": "Hard stop-loss distance from entry price, in percent." },
+        "take_profit_pct": { "type": "number", "exclusiveMinimum": 0, "description": "Take-profit distance from entry price, in percent." },
+        "max_position_pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100, "description": "Maximum share of account equity allocated to a single position, in percent." },
+        "max_daily_loss_pct": { "type": "number", "exclusiveMinimum": 0, "description": "Daily loss limit in percent of equity; the engine stops opening new positions for the day once breached." }
+      }
+    },
+    "pine_source": {
+      "type": "string",
+      "description": "Optional raw Pine Script source for this strategy. Phase 1 only stores and validates this field; a future-phase AI translation layer converts Pine Script into the declarative rule schema above. It has no runtime effect in Phase 1."
+    }
+  },
+  "$defs": {
+    "condition": {
+      "description": "A single boolean condition evaluated per candle. The `type` field selects the condition kind.",
+      "oneOf": [
+        { "$ref": "#/$defs/indicatorComparison" },
+        { "$ref": "#/$defs/candlestickPattern" },
+        { "$ref": "#/$defs/priceLevel" },
+        { "$ref": "#/$defs/externalSignal" }
+      ]
+    },
+    "indicatorSpec": {
+      "type": "object",
+      "required": ["name"],
+      "additionalProperties": false,
+      "description": "Reference to a technical indicator series, computed by the indicator layer (backed by the `technicalindicators` npm package).",
+      "properties": {
+        "name": {
+          "enum": ["rsi", "sma", "ema", "macd", "bollinger", "atr", "volume"],
+          "description": "Indicator identifier. `volume` is the raw candle volume series."
+        },
+        "params": {
+          "type": "object",
+          "additionalProperties": false,
+          "properties": {
+            "period": { "type": "integer", "minimum": 1, "description": "Lookback period (rsi/sma/ema/bollinger/atr)." },
+            "fast_period": { "type": "integer", "minimum": 1, "description": "MACD fast EMA period (default 12)." },
+            "slow_period": { "type": "integer", "minimum": 1, "description": "MACD slow EMA period (default 26)." },
+            "signal_period": { "type": "integer", "minimum": 1, "description": "MACD signal EMA period (default 9)." },
+            "std_dev": { "type": "number", "exclusiveMinimum": 0, "description": "Bollinger standard-deviation multiplier (default 2)." },
+            "source": { "enum": ["open", "high", "low", "close", "volume"], "description": "Input series for the indicator (default \"close\"). E.g. use sma with source \"volume\" for a volume moving average." }
+          }
+        },
+        "field": {
+          "enum": ["macd", "signal", "histogram", "upper", "middle", "lower"],
+          "description": "For multi-valued indicators: which output line to use. macd -> macd|signal|histogram (default macd); bollinger -> upper|middle|lower (default middle)."
+        }
+      }
+    },
+    "comparisonTarget": {
+      "type": "object",
+      "description": "Right-hand side of an indicator comparison: a constant value, another indicator, or a candle price field. Exactly one of value/indicator/price must be set.",
+      "additionalProperties": false,
+      "minProperties": 1,
+      "maxProperties": 1,
+      "properties": {
+        "value": { "type": "number", "description": "Constant numeric threshold, e.g. RSI < 30." },
+        "indicator": { "$ref": "#/$defs/indicatorSpec", "description": "Another indicator series, e.g. EMA(9) crosses above EMA(21)." },
+        "price": { "enum": ["open", "high", "low", "close", "volume"], "description": "A raw candle field, e.g. close > bollinger upper." }
+      }
+    },
+    "indicatorComparison": {
+      "type": "object",
+      "required": ["type", "indicator", "operator", "compare_to"],
+      "additionalProperties": false,
+      "description": "Compare an indicator series against a constant, a price field, or another indicator series. Cross operators look at the previous and current candle.",
+      "properties": {
+        "type": { "const": "indicator_comparison" },
+        "note": { "type": "string", "description": "Free-text documentation for humans; ignored by the engine." },
+        "indicator": { "$ref": "#/$defs/indicatorSpec" },
+        "operator": {
+          "enum": ["gt", "gte", "lt", "lte", "eq", "crosses_above", "crosses_below"],
+          "description": "Comparison operator. crosses_above/crosses_below fire only on the candle where the crossover happens."
+        },
+        "compare_to": { "$ref": "#/$defs/comparisonTarget" }
+      }
+    },
+    "candlestickPattern": {
+      "type": "object",
+      "required": ["type", "pattern"],
+      "additionalProperties": false,
+      "description": "True when the named candlestick pattern (from the `technicalindicators` pattern-recognition set) completes on the current candle. Detection is delegated to that package; QUANTFORGE does not hand-roll pattern logic.",
+      "properties": {
+        "type": { "const": "candlestick_pattern" },
+        "note": { "type": "string", "description": "Free-text documentation for humans; ignored by the engine." },
+        "pattern": {
+          "enum": [
+            "abandonedbaby",
+            "bearishengulfingpattern",
+            "bullishengulfingpattern",
+            "darkcloudcover",
+            "downsidetasukigap",
+            "doji",
+            "dragonflydoji",
+            "gravestonedoji",
+            "bullishharami",
+            "bearishharami",
+            "bullishharamicross",
+            "bearishharamicross",
+            "eveningdojistar",
+            "eveningstar",
+            "morningdojistar",
+            "morningstar",
+            "bullishmarubozu",
+            "bearishmarubozu",
+            "piercingline",
+            "bullishspinningtop",
+            "bearishspinningtop",
+            "threeblackcrows",
+            "threewhitesoldiers",
+            "bullishhammerstick",
+            "bearishhammerstick",
+            "bullishinvertedhammerstick",
+            "bearishinvertedhammerstick",
+            "hammerpattern",
+            "hammerpatternunconfirmed",
+            "hangingman",
+            "hangingmanunconfirmed",
+            "shootingstar",
+            "shootingstarunconfirmed",
+            "tweezertop",
+            "tweezerbottom"
+          ],
+          "description": "Pattern function name exactly as exported by the `technicalindicators` package."
+        }
+      }
+    },
+    "priceLevel": {
+      "type": "object",
+      "required": ["type", "direction", "level"],
+      "additionalProperties": false,
+      "description": "Breakout / breakdown against a price level: either the rolling N-bar high/low (excluding the current candle) as dynamic resistance/support, or a fixed price value.",
+      "properties": {
+        "type": { "const": "price_level" },
+        "note": { "type": "string", "description": "Free-text documentation for humans; ignored by the engine." },
+        "direction": {
+          "enum": ["breaks_above", "breaks_below"],
+          "description": "breaks_above: close crosses from at-or-below to above the level (resistance breakout). breaks_below: mirror for support breakdown."
+        },
+        "level": {
+          "enum": ["highest_high", "lowest_low", "value"],
+          "description": "Level definition: rolling highest high / lowest low over `lookback` prior bars, or a fixed `value`."
+        },
+        "lookback": { "type": "integer", "minimum": 2, "description": "Number of prior bars for highest_high / lowest_low (required for those levels)." },
+        "value": { "type": "number", "description": "Fixed price level (required when level = \"value\")." }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "level": { "const": "value" } } },
+          "then": { "required": ["value"] },
+          "else": { "required": ["lookback"] }
+        }
+      ]
+    },
+    "externalSignal": {
+      "type": "object",
+      "required": ["type", "source", "min_score"],
+      "additionalProperties": false,
+      "description": "OPTIONAL, ADVISORY-ONLY (Phase 1): gate a rule on a named external signal feed, e.g. the trend-jack pipeline's trending-topic output (output/trends_*.json in this repo, where topics carry a Reddit-score-derived `score` and tracked keywords such as \"crypto\" and \"stocks\"). Phase 1 only validates the shape; no bridge/adapter reads live feeds yet. Until a future phase wires a signal provider, the engine treats this condition as neutral (always satisfied) and logs a warning.",
+      "properties": {
+        "type": { "const": "external_signal" },
+        "note": { "type": "string", "description": "Free-text documentation for humans; ignored by the engine." },
+        "source": { "type": "string", "minLength": 1, "description": "Named signal source, e.g. \"trend-jack\"." },
+        "keyword": { "type": "string", "minLength": 1, "description": "Topic/keyword to match in the signal feed, e.g. \"crypto\"." },
+        "symbol": { "type": "string", "minLength": 1, "description": "Alternative to keyword: match the feed by trading symbol, e.g. \"BTC\"." },
+        "min_score": { "type": "number", "minimum": 0, "maximum": 10, "description": "Minimum normalized signal strength (0-10 scale) required for the condition to pass once a provider is wired." }
+      },
+      "anyOf": [
+        { "required": ["keyword"] },
+        { "required": ["symbol"] }
+      ]
+    }
+  }
+}

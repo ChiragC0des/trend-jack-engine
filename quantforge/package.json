@@ -1,0 +1,21 @@
+{
+  "name": "quantforge",
+  "version": "0.1.0",
+  "description": "QUANTFORGE Phase 1: file-based strategy definitions + event-driven backtester (load strategy -> backtest). Later phases add paper trading, confidence gating, and live execution.",
+  "type": "module",
+  "private": true,
+  "engines": {
+    "node": ">=18"
+  },
+  "scripts": {
+    "validate": "node scripts/validate.js",
+    "demo": "node src/execution/demo.js",
+    "generate-fixture": "node scripts/generate-fixture.js"
+  },
+  "dependencies": {
+    "ajv": "^8.17.1",
+    "ccxt": "^4.4.0",
+    "technicalindicators": "^3.1.0",
+    "yaml": "^2.6.0"
+  }
+}

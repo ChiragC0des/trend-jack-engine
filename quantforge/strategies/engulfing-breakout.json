@@ -1,0 +1,49 @@
+{
+  "name": "engulfing-breakout",
+  "description": "Momentum strategy combining a bullish engulfing candlestick pattern with a breakout above the recent range, on above-average volume. One entry rule also carries an OPTIONAL external_signal condition referencing the trend-jack feed — in Phase 1 this is advisory-only (schema support, no live bridge), so the engine treats it as neutral and logs a warning.",
+  "symbols": ["BTC/USDT"],
+  "timeframe": "1h",
+  "entry_rules": [
+    {
+      "type": "candlestick_pattern",
+      "note": "Bullish engulfing pattern detected by the technicalindicators package.",
+      "pattern": "bullishengulfingpattern"
+    },
+    {
+      "type": "price_level",
+      "note": "Close breaks above the highest high of the previous 20 bars (resistance breakout).",
+      "direction": "breaks_above",
+      "level": "highest_high",
+      "lookback": 20
+    },
+    {
+      "type": "indicator_comparison",
+      "note": "Confirm with volume above its 20-bar average.",
+      "indicator": { "name": "volume" },
+      "operator": "gt",
+      "compare_to": { "indicator": { "name": "sma", "params": { "period": 20, "source": "volume" } } }
+    },
+    {
+      "type": "external_signal",
+      "note": "OPTIONAL / NOT YET WIRED: example of biasing entries when the trend-jack scraper reports 'crypto' trending with normalized score >= 6 (0-10 scale). Phase 1 has no signal provider, so this condition is advisory-only and evaluates as neutral. A future-phase adapter will read the trend-jack pipeline's output/trends_*.json feed.",
+      "source": "trend-jack",
+      "keyword": "crypto",
+      "min_score": 6
+    }
+  ],
+  "exit_rules": [
+    {
+      "type": "indicator_comparison",
+      "note": "Take momentum exits when RSI gets stretched.",
+      "indicator": { "name": "rsi", "params": { "period": 14 } },
+      "operator": "gt",
+      "compare_to": { "value": 75 }
+    }
+  ],
+  "risk": {
+    "stop_loss_pct": 2.5,
+    "take_profit_pct": 6,
+    "max_position_pct": 20,
+    "max_daily_loss_pct": 4
+  }
+}
