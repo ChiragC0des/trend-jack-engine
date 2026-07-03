@@ -1,0 +1,70 @@
+{
+  "name": "ema-cross-basic.v2",
+  "description": "[stub-generated placeholder — not a model response] v2 of \"ema-cross-basic\": take-profit tightened 25% so winners are banked before momentum fades.",
+  "symbols": [
+    "BTC/USDT"
+  ],
+  "timeframe": "1h",
+  "entry_rules": [
+    {
+      "type": "indicator_comparison",
+      "note": "Fast EMA(9) crosses above slow EMA(21) on this candle.",
+      "indicator": {
+        "name": "ema",
+        "params": {
+          "period": 9
+        }
+      },
+      "operator": "crosses_above",
+      "compare_to": {
+        "indicator": {
+          "name": "ema",
+          "params": {
+            "period": 21
+          }
+        }
+      }
+    },
+    {
+      "type": "indicator_comparison",
+      "note": "Skip entries into an already-overbought market.",
+      "indicator": {
+        "name": "rsi",
+        "params": {
+          "period": 14
+        }
+      },
+      "operator": "lt",
+      "compare_to": {
+        "value": 70
+      }
+    }
+  ],
+  "exit_rules": [
+    {
+      "type": "indicator_comparison",
+      "note": "Trend over: fast EMA crosses back below slow EMA.",
+      "indicator": {
+        "name": "ema",
+        "params": {
+          "period": 9
+        }
+      },
+      "operator": "crosses_below",
+      "compare_to": {
+        "indicator": {
+          "name": "ema",
+          "params": {
+            "period": 21
+          }
+        }
+      }
+    }
+  ],
+  "risk": {
+    "stop_loss_pct": 3,
+    "take_profit_pct": 6,
+    "max_position_pct": 25,
+    "max_daily_loss_pct": 5
+  }
+}

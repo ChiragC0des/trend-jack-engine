@@ -1,0 +1,46 @@
+{
+  "name": "rsi-mean-reversion",
+  "description": "[stub-generated placeholder — not a model response] RSI mean-reversion derived deterministically from the request text: long when RSI(14) drops under 30, exit when it recovers above 55.",
+  "symbols": [
+    "ETH/USDT"
+  ],
+  "timeframe": "1h",
+  "entry_rules": [
+    {
+      "type": "indicator_comparison",
+      "note": "Oversold: RSI(14) under 30.",
+      "indicator": {
+        "name": "rsi",
+        "params": {
+          "period": 14
+        }
+      },
+      "operator": "lt",
+      "compare_to": {
+        "value": 30
+      }
+    }
+  ],
+  "exit_rules": [
+    {
+      "type": "indicator_comparison",
+      "note": "Mean reverted: RSI(14) back over 55.",
+      "indicator": {
+        "name": "rsi",
+        "params": {
+          "period": 14
+        }
+      },
+      "operator": "gt",
+      "compare_to": {
+        "value": 55
+      }
+    }
+  ],
+  "risk": {
+    "stop_loss_pct": 3,
+    "take_profit_pct": 6,
+    "max_position_pct": 20,
+    "max_daily_loss_pct": 5
+  }
+}

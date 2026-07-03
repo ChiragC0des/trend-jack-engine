@@ -1,5 +1,5 @@
 /**
- * QUANTFORGE worker (Phases 2-3): scheduled background jobs.
+ * QUANTFORGE worker (Phases 2-4): scheduled background jobs.
  *
  * Runs as its OWN OS process (see ./index.js), sharing the SQLite database
  * (WAL mode) with the engine. Heavy/periodic work never runs inside the
@@ -25,9 +25,12 @@
  *     auto-demotion check for live portfolios (src/confidence/promotion.js)
  *     — folded together because demotion reads the same trades/snapshots
  *     the scorer just read.
- *
- * The Phase 4 (AI daily brief) job is intentionally absent — the job list
- * is exactly the three above.
+ *   - AI daily brief (Phase 4, every dailyBriefIntervalMs, default 24h):
+ *     src/ai/dailyBrief.js surveys all portfolios and logs a synthesized
+ *     summary to the `recommendations` table + memory/portfolio-state.md.
+ *     This is the ONLY AI job in the worker, and per Invariant #2 it is
+ *     purely advisory: it reads the trading tables but never writes them —
+ *     it cannot place orders, close positions, or change portfolio status.
  *
  * Stop/target closes fill fully at the trigger price (plus slippage): unlike
  * the engine's resting market orders, a triggered stop is priced by its level
@@ -39,6 +42,7 @@ import { applySlippage, feeFor } from "../execution/fillMath.js";
 import { recordConfidence } from "../confidence/score.js";
 import { checkAutoDemotions } from "../confidence/promotion.js";
 import { isKillSwitchEngaged } from "../confidence/killSwitch.js";
+import { runDailyBrief } from "../ai/dailyBrief.js";
 
 const EPS = 1e-9;
 
@@ -55,6 +59,7 @@ export class Worker {
     this.settlementIntervalMs = config.settlementIntervalMs ?? 2_000;
     this.snapshotIntervalMs = config.snapshotIntervalMs ?? 300_000;
     this.confidenceIntervalMs = config.confidenceIntervalMs ?? 30_000;
+    this.dailyBriefIntervalMs = config.dailyBriefIntervalMs ?? 24 * 3_600_000;
     this.stalePositionMs = config.stalePositionMs ?? 7 * 24 * 3_600_000;
     this.log = config.log ?? console;
     this.timers = [];
@@ -64,8 +69,9 @@ export class Worker {
     this.timers.push(setInterval(() => this.safely("settlement", () => this.settlementSweep()), this.settlementIntervalMs));
     this.timers.push(setInterval(() => this.safely("snapshot", () => this.snapshotEquity()), this.snapshotIntervalMs));
     this.timers.push(setInterval(() => this.safely("confidence", () => this.recalculateConfidence()), this.confidenceIntervalMs));
+    this.timers.push(setInterval(() => this.safely("daily-brief", () => this.dailyBrief()), this.dailyBriefIntervalMs));
     this.log.info?.(
-      `[worker] started: settlement every ${this.settlementIntervalMs}ms, snapshots every ${this.snapshotIntervalMs}ms, confidence every ${this.confidenceIntervalMs}ms`
+      `[worker] started: settlement every ${this.settlementIntervalMs}ms, snapshots every ${this.snapshotIntervalMs}ms, confidence every ${this.confidenceIntervalMs}ms, daily brief every ${this.dailyBriefIntervalMs}ms`
     );
   }
 
@@ -74,9 +80,14 @@ export class Worker {
     this.timers = [];
   }
 
+  // Handles both sync jobs and the async daily-brief job: a rejected promise
+  // must be caught here, not left to crash the worker process.
   safely(job, fn) {
     try {
-      fn();
+      const result = fn();
+      if (result && typeof result.catch === "function") {
+        result.catch((err) => this.log.warn(`[worker] ${job} job failed: ${err.message}`));
+      }
     } catch (err) {
       this.log.warn(`[worker] ${job} job failed: ${err.message}`);
     }
@@ -170,6 +181,14 @@ export class Worker {
       );
     }
     checkAutoDemotions(this.db, { log: this.log });
+  }
+
+  /**
+   * Phase 4 job: the AI daily brief. Advisory only (Invariant #2) — reads
+   * the trading tables, writes one `recommendations` row + a memory entry.
+   */
+  dailyBrief() {
+    return runDailyBrief(this.db, { log: this.log });
   }
 
   closePosition(position, rawPrice, reason, ts) {

@@ -1,6 +1,6 @@
-# QUANTFORGE — Phases 1–3
+# QUANTFORGE — Phases 1–4
 
-QUANTFORGE is an AI strategy-trading lab: **load strategy → backtest → paper trade → confidence gate → live**. This folder contains **Phase 1** (file-based strategy definitions plus an event-driven backtester), **Phase 2** (the paper trading engine: live price feeds, realistic order lifecycle simulation, isolated virtual portfolios in SQLite, and a separate worker process), and **Phase 3** (the confidence score, promotion gate with auto-demotion, and global kill switch — see the Phase 3 section below). There is no AI layer (Phase 4), dashboard (Phase 5), or real live-broker execution (Phase 6) yet — those are later phases.
+QUANTFORGE is an AI strategy-trading lab: **load strategy → backtest → paper trade → confidence gate → live**. This folder contains **Phase 1** (file-based strategy definitions plus an event-driven backtester), **Phase 2** (the paper trading engine: live price feeds, realistic order lifecycle simulation, isolated virtual portfolios in SQLite, and a separate worker process), **Phase 3** (the confidence score, promotion gate with auto-demotion, and global kill switch), and **Phase 4** (the advisory-only AI layer: model-agnostic provider adapter, Pine-Script/English→JSON translator, multi-agent performance analyst, daily brief, recommendation ledger, and markdown memory — see the Phase 4 section below). There is no dashboard (Phase 5) or real live-broker execution (Phase 6) yet — those are the only remaining phases.
 
 It lives inside the same repository as the (unrelated at runtime) Trend-Jack Engine at the repo root; QUANTFORGE Phase 1 is fully self-contained under `/quantforge` and touches nothing outside it.
 
@@ -70,7 +70,7 @@ The Trend-Jack pipeline at the repo root scrapes trending topics/memes and write
 
 ## Phase 1 boundaries
 
-Phase 1 itself contains only the layers above — its execution layer is the backtester. Order-fill simulation for paper trading, worker processes, and the database **now exist as Phase 2**, and the confidence score / promotion gate / kill switch **now exist as Phase 3** (both below), built alongside the Phase 1 modules without changing them. Still deliberately **not** built: AI providers including the Pine Script translator and daily brief (Phase 4), dashboards (Phase 5), real live-broker execution (Phase 6), and the trend-jack signal bridge.
+Phase 1 itself contains only the layers above — its execution layer is the backtester. Order-fill simulation for paper trading, worker processes, and the database **now exist as Phase 2**, the confidence score / promotion gate / kill switch **now exist as Phase 3**, and the AI providers / Pine Script translator / analyst / daily brief **now exist as Phase 4** (all below), built alongside the Phase 1 modules without changing them. Still deliberately **not** built: the dashboard (Phase 5), real live-broker execution (Phase 6), and the trend-jack signal bridge.
 
 ## Phase 2 — paper trading engine
 
@@ -108,7 +108,7 @@ quantforge/
 
 **Order lifecycle.** No instant fills: an order placed on the close of candle *i* rests until candle *i+1* and fills at that open with slippage (buys worse/higher, sells worse/lower — Phase 1 conventions via `fillMath.js`). Each tick fills at most a configurable fraction of the remaining qty and a configurable notional cap, one `fills` row per increment, so large orders pass through `PARTIALLY_FILLED` across several ticks before `FILLED`. Orders failing sanity checks (non-positive qty, insufficient cash for a buy) are `REJECTED`; unfilled remainders are `CANCELLED` on engine shutdown or when an exit signal supersedes a still-filling entry.
 
-**Engine vs worker.** The engine (`npm run engine`) runs both example strategies concurrently — each against its own portfolio, isolated by `portfolio_id`; one strategy never touches another's cash, positions, or orders. It evaluates rules per closed candle by re-running the Phase 1 evaluator over a growing candle buffer (all indicators are causal, so this is signal-identical to streaming). The worker (`npm run worker`) is a **separate OS process** running exactly three scheduled jobs: settlement sweeps (default every 2 s: stop-loss / take-profit hits checked intrabar against the latest candle, stop first; positions older than a configurable market-time age force-closed as stale), equity snapshots (default every 5 min), and — since Phase 3 — confidence recalculation (default every 30 s, see below). The AI daily brief (Phase 4) is intentionally absent from the job list. Both processes are configured by env vars (`QF_DB_PATH`, `QF_FEED`, `QF_SETTLE_MS`, `QF_SNAPSHOT_MS`, `QF_CONFIDENCE_MS`, `QF_STALE_MS`, fee/slippage/fill caps — see the entry-point headers).
+**Engine vs worker.** The engine (`npm run engine`) runs both example strategies concurrently — each against its own portfolio, isolated by `portfolio_id`; one strategy never touches another's cash, positions, or orders. It evaluates rules per closed candle by re-running the Phase 1 evaluator over a growing candle buffer (all indicators are causal, so this is signal-identical to streaming). The worker (`npm run worker`) is a **separate OS process** running exactly four scheduled jobs: settlement sweeps (default every 2 s: stop-loss / take-profit hits checked intrabar against the latest candle, stop first; positions older than a configurable market-time age force-closed as stale), equity snapshots (default every 5 min), confidence recalculation (Phase 3, default every 30 s, see below), and — since Phase 4 — the AI daily brief (default every 24 h, see the Phase 4 section). Both processes are configured by env vars (`QF_DB_PATH`, `QF_FEED`, `QF_SETTLE_MS`, `QF_SNAPSHOT_MS`, `QF_CONFIDENCE_MS`, `QF_BRIEF_MS`, `QF_STALE_MS`, fee/slippage/fill caps — see the entry-point headers).
 
 **Run it:**
 
@@ -152,3 +152,52 @@ npm run confidence-demo   # offline end-to-end Phase 3 demo: real paper run (cap
 ```
 
 Pre-Phase-3 database files are migrated in place: `openDb()` adds the new `portfolios` columns via `ALTER TABLE` when missing.
+
+## Phase 4 — AI advisory layer
+
+Phase 4 adds the AI: a model-agnostic provider adapter, the Pine-Script / plain-English → strategy-JSON translator, a multi-agent performance analyst, and a daily brief generated by the worker. **Invariant #2 — the single most important rule of this phase: the AI never places orders.** Execution stays deterministic code only. Nothing under `src/ai/` imports the engine or paper broker, calls `promote()` (the typed-confirmation gate of Phase 3 cannot be bypassed by the AI), or writes to `orders`/`fills`/`positions`/`portfolios` — those tables are read-only to it. The AI writes exactly three things: rows in the new `recommendations` table, **new** strategy version files (created with the `O_EXCL` flag — an existing file can never be overwritten), and dated entries in `/quantforge/memory/*.md`. `npm run ai-demo` proves this mechanically: it snapshots order/fill/position/trade counts and every portfolio's status/cash before the first AI call and asserts they are identical after the last one.
+
+```
+quantforge/
+├── .env.example                  # AI_PROVIDER / AI_MODEL / AI_API_KEY / AI_BASE_URL / QF_BRIEF_MS
+├── memory/                       # plain-markdown memory (no vector DB) — injected into every prompt
+│   ├── risk-preferences.md       #   operator-editable risk stance the AI must respect
+│   ├── portfolio-state.md        #   running lab summary; daily brief appends dated entries
+│   └── diagnoses.md              #   analyst appends one distilled conclusion per review
+└── src/ai/                       # AI LAYER (advisory only — Invariant #2)
+    ├── providers/
+    │   ├── index.js              #   createProvider(): anthropic | openai | openrouter | stub,
+    │   │                         #   built-in fetch, per-call fallback to stub on any error
+    │   └── stub.js               #   deterministic offline placeholder, clearly banner-labelled
+    ├── memory.js                 #   readMemory() / appendMemory() over memory/*.md
+    ├── recommendations.js        #   the ledger: one row per thing the AI SAID (not executed)
+    ├── strategyFiles.js          #   the only write path for generated strategies (never overwrites)
+    ├── translate.js              #   Pine/English -> schema-validated strategy JSON -> NEW file
+    ├── analyst.js                #   4-role debate (fundamental/sentiment/news/technical) + bull-vs-bear
+    ├── dailyBrief.js             #   worker's 4th job: all-portfolio summary -> ledger + memory
+    └── demo.js                   #   npm run ai-demo (fully offline, asserts Invariant #2)
+```
+
+**Provider adapter.** `createProvider()` reads `AI_PROVIDER` / `AI_MODEL` / `AI_API_KEY` / `AI_BASE_URL` (documented in `.env.example`) and returns one uniform `complete({system, prompt, maxTokens}) → {text, provider, model}` interface. Real adapters for **anthropic** (Messages API), **openai** (Chat Completions), and **openrouter** (OpenAI-compatible endpoint) use the runtime's built-in `fetch` — no HTTP client dependency. With `AI_PROVIDER` unset/`stub` or `AI_API_KEY` missing, the **stub** provider runs instead: a deterministic offline placeholder that never pretends to be a real model (every response starts with `[STUB — no AI_API_KEY configured, …]`) but produces content in the same shape, so all of Phase 4 works and demos with zero network and zero key. A network/auth error from a real provider never crashes anything — the call logs a warning and falls back to the stub.
+
+**Recommendation ledger.** New `recommendations` table (`type` ∈ `analysis` | `operation` | `note`): a log of what the AI *said*, deliberately separate from `trades`/`fills` (what was *executed*) so call quality can later be scored independently of execution quality. Every translator run (`operation`), analyst diagnosis (`analysis`), and daily brief (`note`) is one row with provider/model attribution.
+
+**Memory.** Plain markdown under `/quantforge/memory` — no vector DB. `readMemory()` concatenates all files into every prompt; `appendMemory()` adds dated entries. `risk-preferences.md` is the operator's editable risk stance; the analyst appends distilled conclusions to `diagnoses.md`; the daily brief appends to `portfolio-state.md`.
+
+**Translator** (`src/ai/translate.js`). Takes raw Pine Script or a plain-English description, prompts the provider with the real `schema/strategy.schema.json`, then hard-gates the output through `assertValidStrategy` — invalid output is retried once with the validation errors fed back, then rejected loudly (never silently coerced). Valid output is written to a **new** file (name derived from the strategy's `name`, numeric suffix on collision, `ema-cross-basic.json`/`engulfing-breakout.json` untouchable) and logged as an `operation`.
+
+**Performance analyst** (`src/ai/analyst.js`, TradingAgents-inspired). Reads a strategy's real trade journal and latest confidence breakdown, then produces a diagnosis through a multi-agent structure: four distinctly-framed analyst roles — fundamental (payoff economics), sentiment (crowd positioning), news (event/catalyst blindness), technical (rule mechanics/exits) — carried in one structured provider call for API-call economy, followed by an explicit bull-vs-bear debate and a synthesized diagnosis. Logged as ONE `analysis` row (readable markdown, not JSON blobs). A suggested rule change is **always** proposed as a new version file (e.g. `strategies/ema-cross-basic.v2.json`) through the same schema-validated write path — never a mutation of the running strategy.
+
+**Daily brief** (`src/ai/dailyBrief.js`). The worker's fourth scheduled job (`QF_BRIEF_MS`, default 24 h; set it to seconds for demos): surveys all portfolios (status, latest confidence + capped flag, recent trades/pnl, open positions), recent demotion/kill-switch notifications, and the kill-switch state; logs one `note` row and appends a dated entry to `memory/portfolio-state.md`.
+
+**Run it:**
+
+```bash
+npm run ai-demo   # fully offline (stub provider, no key): translator -> new
+                  # validated strategy file, 4-role analyst on the real
+                  # ema-cross-basic paper record (+ .v2 proposal file), daily
+                  # brief, the recommendations ledger, and the mechanical
+                  # Invariant #2 check (trading tables untouched by AI)
+```
+
+To use a real model instead, export `AI_PROVIDER=anthropic` (or `openai` / `openrouter`) with `AI_API_KEY` and optionally `AI_MODEL` — see `.env.example`. The demo and worker behave identically; only the text quality changes.

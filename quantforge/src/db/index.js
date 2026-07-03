@@ -1,5 +1,5 @@
 /**
- * QUANTFORGE data store (Phases 2-3): SQLite via better-sqlite3.
+ * QUANTFORGE data store (Phases 2-4): SQLite via better-sqlite3.
  *
  * The engine and the worker are SEPARATE OS processes sharing one DB file, so
  * the database is opened in WAL mode with a busy timeout: WAL lets one writer
@@ -175,7 +175,28 @@ CREATE TABLE IF NOT EXISTS system_state (
   reason              TEXT
 );
 
+-- Phase 4: the AI recommendation ledger. Deliberately SEPARATE from
+-- trades/fills: this table logs what the AI *said* (analyses, generated
+-- artifacts, daily briefs), never what was *executed* — so the quality of the
+-- AI's calls can later be scored independently of execution quality. The AI
+-- layer writes here and NOWHERE else in the trading tables (Invariant #2).
+-- portfolio_id / strategy_name are both nullable: a daily brief spans all
+-- portfolios (both NULL), a translator run has a strategy_name but no
+-- portfolio yet, an analyst run has both.
+CREATE TABLE IF NOT EXISTS recommendations (
+  id            INTEGER PRIMARY KEY,
+  portfolio_id  INTEGER REFERENCES portfolios(id),
+  strategy_name TEXT,
+  type          TEXT NOT NULL CHECK (type IN ('analysis','operation','note')),
+  title         TEXT NOT NULL,
+  body          TEXT NOT NULL,
+  provider      TEXT,
+  model         TEXT,
+  created_at    INTEGER NOT NULL
+);
+
 CREATE INDEX IF NOT EXISTS idx_orders_open ON orders (portfolio_id, symbol, status);
+CREATE INDEX IF NOT EXISTS idx_recommendations_created ON recommendations (created_at);
 CREATE INDEX IF NOT EXISTS idx_fills_order ON fills (order_id);
 CREATE INDEX IF NOT EXISTS idx_trades_portfolio ON trades (portfolio_id, closed_at);
 CREATE INDEX IF NOT EXISTS idx_snapshots_portfolio ON snapshots (portfolio_id, ts);

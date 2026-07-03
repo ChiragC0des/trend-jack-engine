@@ -1,5 +1,5 @@
 /**
- * QUANTFORGE worker process entry point (Phases 2-3).
+ * QUANTFORGE worker process entry point (Phases 2-4).
  *
  * Run with: npm run worker    (or: node src/worker/index.js)
  *
@@ -10,9 +10,15 @@
  *   QF_SETTLE_MS      settlement sweep interval, ms (default 2000)
  *   QF_SNAPSHOT_MS    equity snapshot interval, ms (default 300000 = 5 min)
  *   QF_CONFIDENCE_MS  confidence recalculation interval, ms (default 30000)
+ *   QF_BRIEF_MS       AI daily brief interval, ms (default 86400000 = 24h in
+ *                     real deployment; set it short for demos)
  *   QF_STALE_MS       max position age in MARKET time before force-close,
  *                     ms (default 604800000 = 7 days)
  *   QF_FEE_BPS / QF_SLIPPAGE_BPS   fill costs for settlement closes
+ *
+ * The daily brief additionally reads AI_PROVIDER / AI_MODEL / AI_API_KEY /
+ * AI_BASE_URL (see quantforge/.env.example); with no key configured it runs
+ * on the offline stub provider.
  */
 
 import { openDb, DEFAULT_DB_PATH } from "../db/index.js";
@@ -25,6 +31,7 @@ const worker = new Worker(db, {
   settlementIntervalMs: num("QF_SETTLE_MS", 2_000),
   snapshotIntervalMs: num("QF_SNAPSHOT_MS", 300_000),
   confidenceIntervalMs: num("QF_CONFIDENCE_MS", 30_000),
+  dailyBriefIntervalMs: num("QF_BRIEF_MS", 24 * 3_600_000),
   stalePositionMs: num("QF_STALE_MS", 7 * 24 * 3_600_000),
   feeBps: num("QF_FEE_BPS", 10),
   slippageBps: num("QF_SLIPPAGE_BPS", 5),
