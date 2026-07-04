@@ -1,6 +1,6 @@
-# QUANTFORGE — Phases 1–4
+# QUANTFORGE — Phases 1–5
 
-QUANTFORGE is an AI strategy-trading lab: **load strategy → backtest → paper trade → confidence gate → live**. This folder contains **Phase 1** (file-based strategy definitions plus an event-driven backtester), **Phase 2** (the paper trading engine: live price feeds, realistic order lifecycle simulation, isolated virtual portfolios in SQLite, and a separate worker process), **Phase 3** (the confidence score, promotion gate with auto-demotion, and global kill switch), and **Phase 4** (the advisory-only AI layer: model-agnostic provider adapter, Pine-Script/English→JSON translator, multi-agent performance analyst, daily brief, recommendation ledger, and markdown memory — see the Phase 4 section below). There is no dashboard (Phase 5) or real live-broker execution (Phase 6) yet — those are the only remaining phases.
+QUANTFORGE is an AI strategy-trading lab: **load strategy → backtest → paper trade → confidence gate → live**. This folder contains **Phase 1** (file-based strategy definitions plus an event-driven backtester), **Phase 2** (the paper trading engine: live price feeds, realistic order lifecycle simulation, isolated virtual portfolios in SQLite, and a separate worker process), **Phase 3** (the confidence score, promotion gate with auto-demotion, and global kill switch), **Phase 4** (the advisory-only AI layer: model-agnostic provider adapter, Pine-Script/English→JSON translator, multi-agent performance analyst, daily brief, recommendation ledger, and markdown memory), and **Phase 5** (the real dashboard: a third server process pushing live DB state over WebSocket to a terminal-noir React SPA — see the Phase 5 section below). Only real live-broker execution (Phase 6) remains unbuilt.
 
 It lives inside the same repository as the (unrelated at runtime) Trend-Jack Engine at the repo root; QUANTFORGE Phase 1 is fully self-contained under `/quantforge` and touches nothing outside it.
 
@@ -70,7 +70,7 @@ The Trend-Jack pipeline at the repo root scrapes trending topics/memes and write
 
 ## Phase 1 boundaries
 
-Phase 1 itself contains only the layers above — its execution layer is the backtester. Order-fill simulation for paper trading, worker processes, and the database **now exist as Phase 2**, the confidence score / promotion gate / kill switch **now exist as Phase 3**, and the AI providers / Pine Script translator / analyst / daily brief **now exist as Phase 4** (all below), built alongside the Phase 1 modules without changing them. Still deliberately **not** built: the dashboard (Phase 5), real live-broker execution (Phase 6), and the trend-jack signal bridge.
+Phase 1 itself contains only the layers above — its execution layer is the backtester. Order-fill simulation for paper trading, worker processes, and the database **now exist as Phase 2**, the confidence score / promotion gate / kill switch **now exist as Phase 3**, the AI providers / Pine Script translator / analyst / daily brief **now exist as Phase 4**, and the dashboard **now exists as Phase 5** (all below), built alongside the Phase 1 modules without changing them. Still deliberately **not** built: real live-broker execution (Phase 6) and the trend-jack signal bridge.
 
 ## Phase 2 — paper trading engine
 
@@ -201,3 +201,39 @@ npm run ai-demo   # fully offline (stub provider, no key): translator -> new
 ```
 
 To use a real model instead, export `AI_PROVIDER=anthropic` (or `openai` / `openrouter`) with `AI_API_KEY` and optionally `AI_MODEL` — see `.env.example`. The demo and worker behave identically; only the text quality changes.
+
+## Phase 5 — dashboard
+
+Phase 5 adds the real dashboard as the **third OS process** (engine, worker, dashboard server), sharing the same SQLite/WAL file as a **reader**. It computes no metrics of its own — equity curves come from `snapshots`, confidence and its full breakdown from `confidence_scores`, pnl from `trades`; the server's job is to read tables and shape JSON.
+
+```
+quantforge/
+├── dashboard/
+│   ├── server/                   # DASHBOARD SERVER PROCESS (Express + ws)
+│   │   ├── index.js              #   entry point: npm run dashboard (QF_DB_PATH, QF_DASHBOARD_PORT=4100)
+│   │   ├── server.js             #   REST + WS; serves dashboard/web/dist statically on the same port
+│   │   ├── state.js              #   read-only state assembly (no metric computation)
+│   │   └── seed-and-run.js       #   npm run dashboard-demo (full 3-process offline stack)
+│   └── web/                      # React + Vite + Tailwind SPA (own package.json / npm install)
+│       └── src/                  #   header, strategy cards, lattice, ridges, force graph, tape
+└── var/                          # runtime SQLite files + demo screenshots (gitignored)
+```
+
+**Write paths.** The server has exactly TWO, both explicit human actions calling the Phase 3 functions verbatim: `POST /api/promote {strategyName, typedConfirmation}` → `promote()` (the real gate — score ≥ 75, exact typed name; the thrown gate reason is returned verbatim as `{ok:false, error}` with HTTP 422) and `POST /api/kill-switch {engaged, reason}` → `setKillSwitch()`. Everything else is read-only; `dashboard/server` contains no INSERT/UPDATE/DELETE statements at all.
+
+**Zero client polling.** Clients make one initial `GET /api/state` for first paint, then receive everything as WebSocket pushes (`/ws`): the server polls the DB internally (~750 ms), pushes a full `state` payload **only when it changed** (JSON diff), and pushes each new `trades` row as a small dedicated `trade` message so the live tape appends without re-rendering.
+
+**UI** (terminal-noir: `#0A0A0B`, self-hosted JetBrains Mono via `@fontsource/jetbrains-mono` with a system-mono fallback stack, desaturated red/green, hairline borders, scanline overlay, reduced-motion-aware pulses): PAPER/LIVE badge, UTC clock, WS health dot with auto-reconnect backoff, always-visible kill-switch control, dot-matrix Σ P&L readout (5×7 dot numerals from real snapshot equity); one card per portfolio with an equity sparkline (stored snapshots plotted as-is), return %, the stored win-rate/Sharpe sub-scores, a segmented 0–100 confidence meter (amber < 75, green ≥ 75, explicit CAPPED tag) and a PROMOTE button (disabled under the gate) whose modal demands the exact strategy name and shows the server verdict verbatim; a trade scatter ("probability lattice", display-only return% derivation matching the scorer's convention), per-strategy return-distribution ridges (display-side histogram smoothing only), a `d3-force` relationship graph (strategies ↔ traded symbols ↔ AI recommendation "signal" nodes; strategy color is an explicitly-labelled realized-pnl-trend proxy, NOT a sentiment score), the live trade tape, and the notifications journal.
+
+**Run it:**
+
+```bash
+cd dashboard/web && npm install && npm run build && cd ../..   # build the SPA once
+npm run dashboard-demo   # fresh var/dashboard-demo.db + engine (looping fixture replay)
+                         # + spawned worker process + spawned dashboard server;
+                         # open http://localhost:4100 — Ctrl-C stops all three
+npm run dashboard        # dashboard server alone against var/quantforge.db
+                         # (run alongside `npm run engine` + `npm run worker`)
+```
+
+The frontend keeps its own dependency tree (`dashboard/web/package.json`); the built `dist/` is served by the dashboard server on one port, so no Vite process is needed at runtime.

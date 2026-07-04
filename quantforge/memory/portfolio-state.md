@@ -69,3 +69,41 @@ Recent safety events:
 Placeholder takeaway: all figures above are echoed from the live database; no
 portfolio is promotion-eligible while the sample-size cap is in force, and no
 action is recommended beyond continued paper trading.
+
+### 2026-07-04
+
+Daily brief (recommendation #3):
+
+[STUB — no AI_API_KEY configured, this is not a model response]
+
+Daily brief (placeholder synthesis of the data provided in the prompt):
+
+Portfolios:
+- ema-cross-basic: status paper, cash 10277.80, confidence 60/100 (capped), trades 4 total / 0 last 24h (pnl 0.00), open positions 0
+- engulfing-breakout: status paper, cash 9932.05, confidence 15/100 (capped), trades 2 total / 0 last 24h (pnl 0.00), open positions 0
+
+Recent safety events:
+- none
+
+Placeholder takeaway: all figures above are echoed from the live database; no
+portfolio is promotion-eligible while the sample-size cap is in force, and no
+action is recommended beyond continued paper trading.
+
+### 2026-07-04
+
+Daily brief (recommendation #3):
+
+[STUB — no AI_API_KEY configured, this is not a model response]
+
+Daily brief (placeholder synthesis of the data provided in the prompt):
+
+Portfolios:
+- ema-cross-basic: status paper, cash 10277.80, confidence 60/100 (capped), trades 4 total / 0 last 24h (pnl 0.00), open positions 0
+- engulfing-breakout: status paper, cash 9932.05, confidence 15/100 (capped), trades 2 total / 0 last 24h (pnl 0.00), open positions 0
+
+Recent safety events:
+- none
+
+Placeholder takeaway: all figures above are echoed from the live database; no
+portfolio is promotion-eligible while the sample-size cap is in force, and no
+action is recommended beyond continued paper trading.

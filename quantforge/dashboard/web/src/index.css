@@ -1,0 +1,70 @@
+/* QUANTFORGE dashboard — terminal-noir. Self-hosted JetBrains Mono via
+   @fontsource (bundled woff2, no CDN); the stack below falls back to system
+   monospace if the font files ever fail to load. */
+@import "tailwindcss";
+
+@theme {
+  --font-mono: "JetBrains Mono", ui-monospace, "SFMono-Regular", "Cascadia Mono", "Roboto Mono", monospace;
+  --color-noir: #0a0a0b;
+  --color-panel: #101012;
+  --color-hair: #232327;
+  --color-ink: #c9c9cf;
+  --color-dim: #6b6b74;
+  /* desaturated red/green, deliberately not #f00/#0f0 */
+  --color-up: #4fae7c;
+  --color-down: #c25b5b;
+  --color-amber: #c9973f;
+}
+
+html,
+body,
+#root {
+  height: 100%;
+}
+
+body {
+  background: var(--color-noir);
+  color: var(--color-ink);
+  font-family: var(--font-mono);
+  font-size: 13px;
+}
+
+/* subtle CRT scanline texture over everything (pure CSS, low opacity) */
+.scanlines::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  pointer-events: none;
+  z-index: 50;
+  background: repeating-linear-gradient(
+    to bottom,
+    rgba(255, 255, 255, 0.02) 0px,
+    rgba(255, 255, 255, 0.02) 1px,
+    transparent 1px,
+    transparent 3px
+  );
+}
+
+.microlabel {
+  text-transform: uppercase;
+  letter-spacing: 0.14em;
+  font-size: 10px;
+  color: var(--color-dim);
+}
+
+.hairline {
+  border: 1px solid var(--color-hair);
+}
+
+@keyframes qf-pulse {
+  0%, 100% { opacity: 1; }
+  50% { opacity: 0.45; }
+}
+.qf-pulse {
+  animation: qf-pulse 1.6s ease-in-out infinite;
+}
+@media (prefers-reduced-motion: reduce) {
+  .qf-pulse {
+    animation: none;
+  }
+}
