@@ -1,5 +1,5 @@
 /**
- * QUANTFORGE data store (Phases 2-4): SQLite via better-sqlite3.
+ * QUANTFORGE data store (Phases 2-6): SQLite via better-sqlite3.
  *
  * The engine and the worker are SEPARATE OS processes sharing one DB file, so
  * the database is opened in WAL mode with a busy timeout: WAL lets one writer
@@ -41,7 +41,13 @@ CREATE TABLE IF NOT EXISTS portfolios (
   promoted_at     INTEGER,
   live_capital_cap REAL,
   demoted_at      INTEGER,
-  demotion_reason TEXT
+  demotion_reason TEXT,
+  -- Phase 6: start of the mandatory dry-run window. Set lazily by the live
+  -- executor the first time it sees a live portfolio (to promoted_at, i.e.
+  -- the moment live mode began; re-promotion after a demotion restarts it).
+  -- Real (testnet) placement is forbidden until QF_DRY_RUN_HOURS have
+  -- elapsed since this timestamp.
+  dry_run_started_at INTEGER
 );
 
 CREATE TABLE IF NOT EXISTS positions (
@@ -195,6 +201,33 @@ CREATE TABLE IF NOT EXISTS recommendations (
   created_at    INTEGER NOT NULL
 );
 
+-- Phase 6: the live-execution order journal. Deliberately SEPARATE from the
+-- paper orders/fills/positions tables — live execution must never
+-- mutate paper state, and paper simulation must never look like a real
+-- order. Every intent the live executor sees ends up here exactly once:
+-- DRY_RUN (recorded, nothing sent anywhere), SUBMITTED/FILLED (sent to the
+-- Binance TESTNET — the only real adapter; there is no mainnet mode), or
+-- REJECTED (a gate refused it; the gate column names the deciding gate). The UNIQUE
+-- client_order_id is the idempotency rail: a retried intent collides here
+-- instead of double-sending (rejected duplicates are journaled under a
+-- derived '<id>~rN' suffix so the constraint stays meaningful).
+CREATE TABLE IF NOT EXISTS live_orders (
+  id              INTEGER PRIMARY KEY,
+  portfolio_id    INTEGER NOT NULL REFERENCES portfolios(id),
+  client_order_id TEXT NOT NULL UNIQUE,
+  symbol          TEXT NOT NULL,
+  side            TEXT NOT NULL CHECK (side IN ('BUY','SELL')),
+  qty             REAL NOT NULL,
+  price           REAL,
+  notional        REAL,
+  mode            TEXT NOT NULL CHECK (mode IN ('dry_run','testnet')),
+  status          TEXT NOT NULL CHECK (status IN ('DRY_RUN','SUBMITTED','FILLED','REJECTED')),
+  gate            TEXT,
+  reason          TEXT,
+  created_at      INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_live_orders_portfolio ON live_orders (portfolio_id);
 CREATE INDEX IF NOT EXISTS idx_orders_open ON orders (portfolio_id, symbol, status);
 CREATE INDEX IF NOT EXISTS idx_recommendations_created ON recommendations (created_at);
 CREATE INDEX IF NOT EXISTS idx_fills_order ON fills (order_id);
@@ -221,6 +254,11 @@ function migratePortfolios(db) {
     ["live_capital_cap", "REAL"],
     ["demoted_at", "INTEGER"],
     ["demotion_reason", "TEXT"],
+    // Phase 6: NULL for pre-existing rows — the live executor backfills it
+    // from promoted_at on first contact, so an already-live portfolio's
+    // 48h window is measured from its real promotion time, not from the
+    // moment this migration ran.
+    ["dry_run_started_at", "INTEGER"],
   ];
   for (const [name, decl] of wanted) {
     if (!existing.has(name)) db.exec(`ALTER TABLE portfolios ADD COLUMN ${name} ${decl}`);

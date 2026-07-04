@@ -1,6 +1,6 @@
-# QUANTFORGE — Phases 1–5
+# QUANTFORGE — Phases 1–6
 
-QUANTFORGE is an AI strategy-trading lab: **load strategy → backtest → paper trade → confidence gate → live**. This folder contains **Phase 1** (file-based strategy definitions plus an event-driven backtester), **Phase 2** (the paper trading engine: live price feeds, realistic order lifecycle simulation, isolated virtual portfolios in SQLite, and a separate worker process), **Phase 3** (the confidence score, promotion gate with auto-demotion, and global kill switch), **Phase 4** (the advisory-only AI layer: model-agnostic provider adapter, Pine-Script/English→JSON translator, multi-agent performance analyst, daily brief, recommendation ledger, and markdown memory), and **Phase 5** (the real dashboard: a third server process pushing live DB state over WebSocket to a terminal-noir React SPA — see the Phase 5 section below). Only real live-broker execution (Phase 6) remains unbuilt.
+QUANTFORGE is an AI strategy-trading lab: **load strategy → backtest → paper trade → confidence gate → live**. This folder contains **Phase 1** (file-based strategy definitions plus an event-driven backtester), **Phase 2** (the paper trading engine: live price feeds, realistic order lifecycle simulation, isolated virtual portfolios in SQLite, and a separate worker process), **Phase 3** (the confidence score, promotion gate with auto-demotion, and global kill switch), **Phase 4** (the advisory-only AI layer: model-agnostic provider adapter, Pine-Script/English→JSON translator, multi-agent performance analyst, daily brief, recommendation ledger, and markdown memory), **Phase 5** (the real dashboard: a third server process pushing live DB state over WebSocket to a terminal-noir React SPA — see the Phase 5 section below), and **Phase 6** (gated live execution — now built, **dry-run by default and Binance TESTNET only**: there is no mainnet code path anywhere; see the Phase 6 section below). Only the trend-jack signal bridge remains unbuilt.
 
 It lives inside the same repository as the (unrelated at runtime) Trend-Jack Engine at the repo root; QUANTFORGE Phase 1 is fully self-contained under `/quantforge` and touches nothing outside it.
 
@@ -81,7 +81,7 @@ The Trend-Jack pipeline at the repo root scrapes trending topics/memes and write
 
 ## Phase 1 boundaries
 
-Phase 1 itself contains only the layers above — its execution layer is the backtester. Order-fill simulation for paper trading, worker processes, and the database **now exist as Phase 2**, the confidence score / promotion gate / kill switch **now exist as Phase 3**, the AI providers / Pine Script translator / analyst / daily brief **now exist as Phase 4**, and the dashboard **now exists as Phase 5** (all below), built alongside the Phase 1 modules without changing them. Still deliberately **not** built: real live-broker execution (Phase 6) and the trend-jack signal bridge.
+Phase 1 itself contains only the layers above — its execution layer is the backtester. Order-fill simulation for paper trading, worker processes, and the database **now exist as Phase 2**, the confidence score / promotion gate / kill switch **now exist as Phase 3**, the AI providers / Pine Script translator / analyst / daily brief **now exist as Phase 4**, the dashboard **now exists as Phase 5**, and gated live execution (dry-run by default, testnet-only) **now exists as Phase 6** (all below), built alongside the Phase 1 modules without changing them. Still deliberately **not** built: the trend-jack signal bridge.
 
 ## Phase 2 — paper trading engine
 
@@ -135,7 +135,7 @@ The demo spawns `src/worker/index.js` via `node:child_process` — the same two-
 
 ## Phase 3 — confidence score, promotion gate, kill switch
 
-Phase 3 decides **which paper strategies deserve live status** and enforces the safety rails around that status. Promotion here flips `portfolios.status` to `'live'` and applies rules (capital cap, auto-demotion, kill switch) — it does **not** route orders to a real exchange; real live-broker execution is Phase 6.
+Phase 3 decides **which paper strategies deserve live status** and enforces the safety rails around that status. Promotion here flips `portfolios.status` to `'live'` and applies rules (capital cap, auto-demotion, kill switch) — it does **not** route orders to a real exchange; that is Phase 6 (below), which sits strictly downstream of this gate and re-checks it per order.
 
 ```
 quantforge/
@@ -248,3 +248,50 @@ npm run dashboard        # dashboard server alone against var/quantforge.db
 ```
 
 The frontend keeps its own dependency tree (`dashboard/web/package.json`); the built `dist/` is served by the dashboard server on one port, so no Vite process is needed at runtime.
+
+## Phase 6 — gated live execution (dry-run by default, Binance TESTNET only)
+
+Phase 6 is the most dangerous phase, so it is built around two structural rules:
+
+1. **The default — and the demo — is a pure dry-run.** With no configuration, the live runner journals the orders it *would* place (`live_orders` table, `mode='dry_run'`, `status='DRY_RUN'`, a `WOULD place ...` log line, a notification) and touches no exchange and no funds. It also never touches the paper `orders`/`fills`/`positions` tables: dry-run is an audit trail of intent, not a second simulator.
+2. **TESTNET only.** The single real adapter (`src/live/binanceTestnetBroker.js`) targets the Binance **spot testnet** via ccxt `setSandboxMode(true)`, and after enabling sandbox mode it *verifies* that every resolved endpoint URL points at the testnet — refusing permanently otherwise. There is deliberately no `mainnet` / `live-real` value for `QF_LIVE_MODE` and no mainnet code path anywhere; real funds are out of scope for this phase, by design.
+
+```
+quantforge/src/live/                # LIVE EXECUTION LAYER (4th OS process)
+├── index.js                        #   entry point: npm run live — mirrors paper orders of
+│                                   #   PROMOTED portfolios through the gated executor
+├── executor.js                     #   THE SAFETY CORE: the six-gate stack (below)
+├── dryRunBroker.js                 #   DEFAULT broker: journals + logs, places nothing anywhere
+├── binanceTestnetBroker.js         #   the ONLY real adapter (testnet); the ONLY file importing ccxt
+├── liveOrders.js                   #   shared journal writer + deterministic client order ids
+└── demo.js                         #   npm run live-demo — fully offline proof of every gate
+```
+
+**The six gates**, evaluated **in order** for every intended order; the first failure journals a `REJECTED` `live_orders` row naming the gate (plus a notification and a log line), and nothing is sent anywhere:
+
+| # | gate | rule (default) |
+|---|------|----------------|
+| 1 | `promotion` | portfolio `status` must be `'live'` — i.e. it passed the real Phase 3 `promote()` (typed confirmation + confidence ≥ 75). Paper portfolios never place even a dry-run live order. |
+| 2 | `confidence` | latest confidence **re-checked at order time**: still ≥ 75 and not capped. |
+| 3 | `kill_switch` | global kill switch must be disengaged. |
+| 4 | `dry_run_window` | *mode gate:* testnet placement is forbidden until `QF_DRY_RUN_HOURS` (**48**) of wall-clock time have elapsed since `portfolios.dry_run_started_at` (backfilled from `promoted_at` on first contact; re-promotion restarts it). Until then the executor is **forced** into dry-run regardless of configuration. |
+| 5 | `live_enablement` | *mode gate:* even after the window, testnet requires the explicit opt-in `QF_LIVE_MODE=testnet`. Any other value (including unset — the default) means dry-run. No mainnet value exists — intentionally. |
+| 6 | circuit breakers | `order_size` (finite qty/price; notional ≤ `QF_MAX_ORDER_NOTIONAL` **500** and ≤ `live_capital_cap`), `per_trade_risk` (est. loss-at-stop ≤ `QF_PER_TRADE_RISK_PCT` **1**% of live capital; 5%-of-notional proxy when no stop), `max_concurrent` (open live exposures < `QF_MAX_CONCURRENT` **3**), `daily_loss` (same UTC daily-loss rule as auto-demotion — breach blocks new entries immediately), `idempotency` (deterministic `client_order_id` + UNIQUE constraint: a retried intent is refused, never double-sent). |
+
+Only when the mode resolves to `testnet` **and** all gates pass is the testnet broker called — and that broker itself refuses (journaled `REJECTED`, never a crash) if credentials are missing, if sandbox mode cannot be verified, or if the exchange call errors. Structurally, `executor.js` never imports ccxt: the testnet broker must be *injected*, and `src/live/index.js` only constructs it (dynamic import) when `QF_LIVE_MODE=testnet` and both keys are present. A process that never injects it — like the offline demo — has **no code path to an exchange at all**.
+
+New storage (`src/db/index.js`): the `live_orders` journal (UNIQUE `client_order_id`, `mode` ∈ dry_run/testnet, `status` ∈ DRY_RUN/SUBMITTED/FILLED/REJECTED, `gate`, `reason`) and the `portfolios.dry_run_started_at` column (added via the same forward-compatible migration; NULL on old files until the executor backfills it from `promoted_at`).
+
+**Run it:**
+
+```bash
+npm run live-demo   # fully OFFLINE: seeds + genuinely promotes a synthetic portfolio, then
+                    # proves every gate (window forcing, missing-key refusal, kill switch,
+                    # paper rejection, breakers, idempotent retry) — no network, ever
+npm run live        # the real runner (default: pure dry-run against var/quantforge.db).
+                    # Arming testnet requires ALL of: QF_LIVE_MODE=testnet, both
+                    # QF_BINANCE_TESTNET_KEY/SECRET set, the 48h window elapsed,
+                    # and every gate green per order.
+```
+
+Env (documented in `.env.example`): `QF_LIVE_MODE` (default `dry_run`), `QF_DRY_RUN_HOURS` (48), `QF_BINANCE_TESTNET_KEY` / `QF_BINANCE_TESTNET_SECRET`, `QF_MAX_ORDER_NOTIONAL` (500), `QF_PER_TRADE_RISK_PCT` (1), `QF_MAX_CONCURRENT` (3), `QF_LIVE_POLL_MS` (5000).
