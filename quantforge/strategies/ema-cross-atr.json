@@ -1,0 +1,73 @@
+{
+  "name": "ema-cross-atr",
+  "description": "ema-cross-basic with volatility-scaled exits: stop 2xATR(14), target 4xATR(14) at entry, instead of fixed 3%/8%. Motivated by the 2017 year-scale failure analysis: fixed-pct stops were noise-level in December volatility and the strategy bled stop-outs while the market rose 39%. The pct fields remain as the schema-required warmup/engine fallback.",
+  "symbols": [
+    "BTC/USDT"
+  ],
+  "timeframe": "1h",
+  "entry_rules": [
+    {
+      "type": "indicator_comparison",
+      "note": "Fast EMA(9) crosses above slow EMA(21) on this candle.",
+      "indicator": {
+        "name": "ema",
+        "params": {
+          "period": 9
+        }
+      },
+      "operator": "crosses_above",
+      "compare_to": {
+        "indicator": {
+          "name": "ema",
+          "params": {
+            "period": 21
+          }
+        }
+      }
+    },
+    {
+      "type": "indicator_comparison",
+      "note": "Skip entries into an already-overbought market.",
+      "indicator": {
+        "name": "rsi",
+        "params": {
+          "period": 14
+        }
+      },
+      "operator": "lt",
+      "compare_to": {
+        "value": 70
+      }
+    }
+  ],
+  "exit_rules": [
+    {
+      "type": "indicator_comparison",
+      "note": "Trend over: fast EMA crosses back below slow EMA.",
+      "indicator": {
+        "name": "ema",
+        "params": {
+          "period": 9
+        }
+      },
+      "operator": "crosses_below",
+      "compare_to": {
+        "indicator": {
+          "name": "ema",
+          "params": {
+            "period": 21
+          }
+        }
+      }
+    }
+  ],
+  "risk": {
+    "stop_loss_pct": 3,
+    "take_profit_pct": 8,
+    "stop_atr_mult": 2,
+    "take_profit_atr_mult": 4,
+    "atr_period": 14,
+    "max_position_pct": 25,
+    "max_daily_loss_pct": 5
+  }
+}

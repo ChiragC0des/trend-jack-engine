@@ -44,8 +44,11 @@
       "additionalProperties": false,
       "description": "Risk management parameters. Percentages are plain numbers, e.g. 2 means 2%.",
       "properties": {
-        "stop_loss_pct": { "type": "number", "exclusiveMinimum": 0, "description": "Hard stop-loss distance from entry price, in percent." },
-        "take_profit_pct": { "type": "number", "exclusiveMinimum": 0, "description": "Take-profit distance from entry price, in percent." },
+        "stop_loss_pct": { "type": "number", "exclusiveMinimum": 0, "description": "Hard stop-loss distance from entry price, in percent. When stop_atr_mult is set, this becomes the fallback used while ATR is warming up (and by engines not yet ATR-aware)." },
+        "take_profit_pct": { "type": "number", "exclusiveMinimum": 0, "description": "Take-profit distance from entry price, in percent. When take_profit_atr_mult is set, this becomes the fallback used while ATR is warming up (and by engines not yet ATR-aware)." },
+        "stop_atr_mult": { "type": "number", "exclusiveMinimum": 0, "description": "Optional volatility-scaled stop: stop distance = this multiple of ATR(atr_period) at entry. Adapts to the volatility regime where a fixed percent cannot. Backtester support; pct fields remain the required fallback." },
+        "take_profit_atr_mult": { "type": "number", "exclusiveMinimum": 0, "description": "Optional volatility-scaled target: target distance = this multiple of ATR(atr_period) at entry." },
+        "atr_period": { "type": "integer", "minimum": 1, "description": "ATR lookback for the *_atr_mult fields (default 14)." },
         "max_position_pct": { "type": "number", "exclusiveMinimum": 0, "maximum": 100, "description": "Maximum share of account equity allocated to a single position, in percent." },
         "max_daily_loss_pct": { "type": "number", "exclusiveMinimum": 0, "description": "Daily loss limit in percent of equity; the engine stops opening new positions for the day once breached." }
       }

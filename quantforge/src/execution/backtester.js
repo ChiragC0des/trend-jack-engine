@@ -25,6 +25,7 @@
  */
 
 import { createEvaluator } from "../strategy/evaluator.js";
+import { computeIndicatorSeries } from "../indicators/index.js";
 
 const PERIODS_PER_YEAR = {
   "1m": 525600, "5m": 105120, "15m": 35040, "30m": 17520,
@@ -65,6 +66,17 @@ export function backtest(strategy, candles, options = {}) {
   const { risk } = strategy;
 
   const evaluator = createEvaluator(strategy, candles, { externalSignals, log });
+
+  // Optional volatility-scaled exits: when risk.stop_atr_mult /
+  // take_profit_atr_mult are set, stop/target distances at entry are that
+  // multiple of ATR instead of a fixed percent. The ATR used for a fill at
+  // candle i's open is atr[i-1] — the last fully-closed candle — so the
+  // distance is knowable when the order was queued (no lookahead). While ATR
+  // is warming up (null), the pct fields act as the documented fallback.
+  const atrSeries =
+    risk.stop_atr_mult != null || risk.take_profit_atr_mult != null
+      ? computeIndicatorSeries({ name: "atr", params: { period: risk.atr_period ?? 14 } }, candles)
+      : null;
 
   let cash = initialCapital;
   let position = null; // { qty, entryPrice, entryFee, entryIndex, stopPrice, targetPrice }
@@ -128,13 +140,22 @@ export function backtest(strategy, candles, options = {}) {
       if (qty > 0) {
         const entryFee = qty * fillPrice * fee;
         cash -= qty * fillPrice + entryFee;
+        const atr = atrSeries?.[i - 1] ?? null;
+        const stopDist =
+          risk.stop_atr_mult != null && atr != null
+            ? risk.stop_atr_mult * atr
+            : fillPrice * (risk.stop_loss_pct / 100);
+        const targetDist =
+          risk.take_profit_atr_mult != null && atr != null
+            ? risk.take_profit_atr_mult * atr
+            : fillPrice * (risk.take_profit_pct / 100);
         position = {
           qty,
           entryPrice: fillPrice,
           entryFee,
           entryIndex: i,
-          stopPrice: fillPrice * (1 - risk.stop_loss_pct / 100),
-          targetPrice: fillPrice * (1 + risk.take_profit_pct / 100),
+          stopPrice: fillPrice - stopDist,
+          targetPrice: fillPrice + targetDist,
         };
       }
     }
