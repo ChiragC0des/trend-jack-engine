@@ -26,6 +26,7 @@ import { openDb } from "../../src/db/index.js";
 import { promote } from "../../src/confidence/promotion.js";
 import { setKillSwitch } from "../../src/confidence/killSwitch.js";
 import { readState, tradesSince, maxTradeId } from "./state.js";
+import { runStrategyLab, LabInputError, LabTranslationError } from "./strategyLab.js";
 
 const HERE = path.dirname(fileURLToPath(import.meta.url));
 const WEB_DIST = path.join(HERE, "..", "web", "dist");
@@ -59,6 +60,18 @@ export function createDashboardServer({ dbPath, port = DEFAULT_DASHBOARD_PORT, l
     } catch (err) {
       // promote() throws with the precise failed gate — surface it verbatim.
       res.status(422).json({ ok: false, error: err.message });
+    }
+  });
+
+  // --- Strategy Lab: advisory only — translates, validates, backtests on a
+  // fixture and logs ONE recommendations row; never touches orders / fills /
+  // positions / portfolios / live_orders, never calls promote(), never trades.
+  app.post("/api/strategy/lab", async (req, res) => {
+    try {
+      res.json(await runStrategyLab(db, req.body ?? {}, { log }));
+    } catch (err) {
+      const status = err instanceof LabInputError ? 400 : err instanceof LabTranslationError ? 422 : 500;
+      res.status(status).json({ ok: false, error: err.message });
     }
   });
 

@@ -66,11 +66,13 @@ Respond with ONLY the JSON object for the strategy — no prose, no markdown.`;
 }
 
 /**
- * Translate `input` into a validated strategy, write it to a NEW file, and
- * log the operation. Throws when the model output cannot be made valid.
- * @returns {{ strategy, filePath, raw, recommendationId }}
+ * Pure translation core: `input` -> validated strategy object. No database
+ * row, no file on disk — callers that only need the object (e.g. the
+ * dashboard's Strategy Lab) use this directly; translateToStrategy layers
+ * the persistence on top. Throws when the model output cannot be made valid.
+ * @returns {{ strategy, raw, provider, model }}
  */
-export async function translateToStrategy(db, input, { provider, log = console, now = Date.now() } = {}) {
+export async function translateStrategyText(input, { provider, log = console } = {}) {
   provider ??= createProvider({ log });
   const memory = readMemory();
 
@@ -102,16 +104,28 @@ export async function translateToStrategy(db, input, { provider, log = console, 
     });
   }
 
+  return { strategy, raw: response.text, provider: response.provider, model: response.model };
+}
+
+/**
+ * Translate `input` into a validated strategy, write it to a NEW file, and
+ * log the operation. Throws when the model output cannot be made valid.
+ * @returns {{ strategy, filePath, raw, recommendationId }}
+ */
+export async function translateToStrategy(db, input, { provider, log = console, now = Date.now() } = {}) {
+  provider ??= createProvider({ log });
+  const { strategy, raw, provider: providerName, model } = await translateStrategyText(input, { provider, log });
+
   const filePath = writeNewStrategyFile(strategy);
   const recommendationId = logRecommendation(db, {
     strategyName: strategy.name,
     type: "operation",
     title: `Translated input into new strategy file: ${strategy.name}`,
     body: `Input:\n${input}\n\nGenerated (schema-validated) strategy written to ${filePath}:\n\n${JSON.stringify(strategy, null, 2)}`,
-    provider: response.provider,
-    model: response.model,
+    provider: providerName,
+    model,
     now,
   });
   log.info?.(`[ai/translate] wrote new strategy file ${filePath} (recommendation #${recommendationId})`);
-  return { strategy, filePath, raw: response.text, recommendationId };
+  return { strategy, filePath, raw, recommendationId };
 }

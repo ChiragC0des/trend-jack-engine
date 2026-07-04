@@ -5,6 +5,7 @@ import Lattice from "./components/Lattice.jsx";
 import RidgePanel from "./components/RidgePanel.jsx";
 import ForceGraph from "./components/ForceGraph.jsx";
 import TradeTape from "./components/TradeTape.jsx";
+import StrategyLab from "./components/StrategyLab.jsx";
 
 export default function App() {
   const { state, connected, tape } = useDashboard();
@@ -52,6 +53,12 @@ export default function App() {
           </div>
         </main>
       )}
+
+      {/* Full-width section, deliberately outside the state gate: the Lab only
+          needs the HTTP endpoint, so it works even before the WS connects. */}
+      <section className="p-4 pt-0">
+        <StrategyLab />
+      </section>
     </div>
   );
 }
