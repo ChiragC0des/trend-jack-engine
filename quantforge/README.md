@@ -49,6 +49,17 @@ npm run demo        # backtest both example strategies against the local fixture
 
 The demo prints the full trade list plus metrics — total return, win rate, Sharpe, Sortino, max drawdown, and profit factor — for each example strategy. It uses the committed synthetic fixture, so it needs no network or exchange keys. To backtest one specific strategy: `node src/execution/demo.js strategies/ema-cross-basic.json`. To pull real historical candles instead, use `fetchCandles()` / `getCandles()` from `src/data/candleLoader.js` (ccxt, network required). Regenerate the fixture with `npm run generate-fixture` (seeded, deterministic).
 
+## Historical fixtures
+
+Besides the synthetic demo fixture, `fixtures/BTC_USD_1h_2017_bitfinex.json` holds one full year (8,760 hourly candles, Jan 1 – Dec 31 2017) of REAL Bitfinex BTC/USD data, resampled from the public minute-candle dataset at github.com/Zombie-3000/Bitfinex-historical-data (data provided as-is by that project). Run the year-scale backtest + failure diagnosis over it with:
+
+```bash
+node scripts/backtest-year.js                 # all strategies vs the 2017 fixture
+node scripts/backtest-year.js <fixture> <strategy.json...>   # or pick your own
+```
+
+It prints, per strategy: headline metrics vs buy & hold, monthly P&L against the market's monthly move and an efficiency ratio (low = chop), exit-reason breakdown, worst trades, longest losing streak, and the max-drawdown window — i.e. not just how much the rules made, but where and why they lose.
+
 ## How the strategy schema works
 
 Strategy files live in `/strategies` as JSON (or YAML) and are validated against `schema/strategy.schema.json` (JSON Schema draft 2020-12) before loading. A strategy has:
